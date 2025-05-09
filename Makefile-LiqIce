@@ -1,0 +1,28 @@
+#
+# VODE Makefile
+# JYH
+#
+
+.SILENT :
+
+LD = pgf90 -r8 #
+LD_FLAGS   = #-fdefault-real-8
+ECHO       = echo
+MAKE       = make -f Makefile
+RM        = rm -f
+COMPILE.f = $(LD) -c
+
+EXE        = pmli.out
+
+VODE       = vode.f
+MAIN       = parcelmodel-liquidice.f90
+#LD_FLAGS   = -l$(MODEL)#-fdefault-real-8
+                    # Lucien added '$(MAIN) FORCE' below
+
+FORCE :
+	$(ECHO)
+	$(ECHO) "compiling " $(VODE) $(MAIN)
+	$(COMPILE.f) $(VODE)
+	$(COMPILE.f) $(MAIN)
+	$(ECHO) "linking.. "
+	$(LD) $(LD_FLAGS) -o $(EXE) vode.o parcelmodel-liquidice.o
