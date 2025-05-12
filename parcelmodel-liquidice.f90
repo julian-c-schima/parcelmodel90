@@ -82,7 +82,8 @@ program parcelmodel
                           ! 5 = No Heterogeneous Freezing
                           
   ! iicemodel: method for computing ice growth
-  iicemodel=2             ! 1 = Spheres (can choose constant deposition coeff alphaSphere)
+  iicemodel=0			  ! 0 = Basic spherical model (no effective diffusivity)
+                          ! 1 = Spheres (can choose constant deposition coeff alphaSphere)
 						  ! 2 = Faceted growth with spheroid approximation to adjust phi
 						  ! 3 = Faceted growth with adjusting a and c each full timestep
 						  ! 4 = Faceted growth with recalculating dimensions within VODE
@@ -104,11 +105,11 @@ program parcelmodel
   Ma = 10.                 ! growth mode for prism (a) face
   Mc = 10.                 ! growth mode for basal (c) face
   alphaSphere = 1          ! constant deposition coefficient if using spherical model
-  Tinit = -15.             ! initial temperature [C]
+  Tinit = -30.             ! initial temperature [C]
   TinitK = Tinit + To
   Pinit = 40000.0          ! initial pressure [Pa]
   ztopinit = 2000.0        ! Total cloud depth [m]
-  rhinit = 0.99             ! Initial relative humidity with respect to liquid
+  rhinit = 0.90             ! Initial relative humidity with respect to liquid
   wmax = 0.5               ! maximum vertical motion
   endloop = .false.        ! determine when to stop model based on vertical motion input
 
@@ -285,7 +286,12 @@ program parcelmodel
 		   riotimestep(i) = rio(i)
 		
 		   ! Calculate alpha values for each ice crystal bin.
-		   if(iicemodel.eq.1)then
+		   if(iicemodel.eq.0)then
+
+		   	alpha_a(i) = 1.
+		   	alpha_c(i) = 1.
+
+		   elseif(iicemodel.eq.1)then
 
 		   	alpha_a(i) = alphaSphere
 		   	alpha_c(i) = alphaSphere
@@ -301,7 +307,7 @@ program parcelmodel
 
 		   endif
 		   
-		   if(iicemodel.eq.1)then
+		   if(iicemodel.eq.0.or.iicemodel.eq.1)then
 		    ! spheres; a = c.
 			a(i) = y(j)
 			c(i) = y(j)
@@ -369,8 +375,9 @@ program parcelmodel
         j = nbliq + i
         if(y(j) .ne. 0.0)then
         	
-           if (iicemodel.eq.1) then
+           if (iicemodel.eq.0.or.iicemodel.eq.1) then
            
+           ! y = a = c
            rio(i) = y(j)
            ao(i) = y(j)
 		   co(i) = y(j)
@@ -394,15 +401,9 @@ program parcelmodel
            ao(i) = a(i)
 		   co(i) = c(i) 
 		   	
-		   elseif(iicemodel.eq.3)then
-		   
-		   	rio(i) = y(j)
-           	ao(i) = a(i)
-		   	co(i) = c(i) 
-		   	!print*,"vol_rat",(2*pi*co(i)*(ao(i)**2.))/(V),y(j),ao(i),co(i),tc
+		   elseif(iicemodel.eq.3.or.iicemodel.eq.4)then
 
-		   elseif(iicemodel.eq.4)then
-
+			! Update beginning-of-timestep dimensions
 		   	rio(i) = y(j)
            	ao(i) = a(i)
 		   	co(i) = c(i) 
@@ -860,21 +861,26 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
         ! to previously calculated alpha value (outside of vode)
         alpha_ain = alpha_a(i)
         alpha_cin = alpha_c(i)
+        
+        if (iicemodel.eq.0) then
+        
+            G = ((((Ls/(Rv*y(itemp)))-1.)*(Ls/(Kt*y(itemp)))) + ((Rv*y(itemp)) &
+             	/(Dv*ei)))**(-1.) ! maximum diffusivity
      
-     	if (iicemodel.eq.1) then
+        	dy(j) = (G*Sui)/(y(j)*rhoi)  
+     
+     	elseif (iicemodel.eq.1) then
      	
      		! Kinetically modified diffusivity
      		! Note that we set alpha_a = alpha_c = const. in this model
 			Dvkin = Dv / ((4 * Dv)/(alpha_a(i) * v_v * y(j)) + 1)
 			
+			! The equation with a and c dimensions (currently not used here)
 			!Dvkin = (2./3.) * Dv / ((4 * Dv * cap)/(alpha_a(i) * Ls * ao(i) * co(i)) + 1) + &
 			!(1./3.) * Dv / ((4 * Dv * cap)/(alpha_c(i) * Ls * ao(i) * ao(i)) + 1)
 		
 			G = ((((Ls/(Rv*y(itemp)))-1.)*(Ls/(Kt*y(itemp)))) + ((Rv*y(itemp)) &
              	/(Dvkin*ei)))**(-1.) ! effective diffusivity
-     	
-     		!G = ((((Ls/(Rv*y(itemp)))-1.)*(Ls/(Kt*y(itemp)))) + ((Rv*y(itemp)) &
-            ! 	/(Dv*ei)))**(-1.) ! maximum diffusivity
      
         	dy(j) = (G*Sui)/(y(j)*rhoi)
 
