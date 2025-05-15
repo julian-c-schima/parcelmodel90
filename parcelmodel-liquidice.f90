@@ -40,6 +40,9 @@ program parcelmodel
   real Ma,Mc,scrit_a,scrit_c,ha,hc,atot,ctot,alpha_ain,alpha_cin,alphaSphere
   real avp, athp, cvp, cthp, cap, phio, ab, ap, IGR, Vo, V
   real Rk, Rt, Fmax, Fa, Fc, drho, negsui
+  ! extra rosette-related variables
+  real scrit_a_temp, scrit_c_temp, scritrat, adj_fraction, adj_factor, hpyr, pyrang, xfac, bsize
+  integer habit(nbice), ihabitchoice
   
   ! other variables / constants / functions to get variables
   real Tinit,TinitK,Pinit,ztopinit,RHinit
@@ -62,7 +65,7 @@ program parcelmodel
   common/ccnchar/vhoff,molmass,rhosolute  
   COMMON/inputvars/iicemodel
   ! Arrays for information pertaining to the a and c dimensions of ice
-  COMMON/icevars/ao,co,a,c,rio,alpha_a,alpha_c
+  COMMON/icevars/ao,co,a,c,rio,alpha_a,alpha_c,habit
   ! Input variables into root finding method for determining alpha
   COMMON/edgezzbren/sui,Ma,Mc,scrit_a,scrit_c,ha,hc,atot,ctot,alpha_ain,alpha_cin
   
@@ -81,12 +84,20 @@ program parcelmodel
                           ! 4 = Classical Theory (KC, 2004, 2009)
                           ! 5 = No Heterogeneous Freezing
                           
+  ! ihabitchoice: 				  
+  ihabitchoice=1          ! 1 = single crystals
+  					      ! 2 = rosettes (random number of arms)
+  						  ! 3 = combination of single crystals and rosettes (random num of arms)
+  						  ! 4 - 12 = n-arm rosettes
+                          
   ! iicemodel: method for computing ice growth
-  iicemodel=4			  ! 0 = Basic spherical model (no effective diffusivity)
+  iicemodel=2			  ! 0 = Basic spherical model (no effective diffusivity)
                           ! 1 = Spheres (can choose constant deposition coeff alphaSphere)
 						  ! 2 = Faceted growth with spheroid approximation to adjust phi
 						  ! 3 = Faceted growth with adjusting a and c each full timestep
 						  ! 4 = Faceted growth with recalculating dimensions within VODE
+  ! Size at which rosettes begin to branch (set scrits to be the same for smaller crystals)
+  bsize=1.e-5
 
 
   ! output file
@@ -105,11 +116,11 @@ program parcelmodel
   Ma = 10.                 ! growth mode for prism (a) face
   Mc = 10.                 ! growth mode for basal (c) face
   alphaSphere = 1          ! constant deposition coefficient if using spherical model
-  Tinit = -30.             ! initial temperature [C]
+  Tinit = -7.             ! initial temperature [C]
   TinitK = Tinit + To
   Pinit = 40000.0          ! initial pressure [Pa]
   ztopinit = 2000.0        ! Total cloud depth [m]
-  rhinit = 0.8             ! Initial relative humidity with respect to liquid
+  rhinit = 0.95             ! Initial relative humidity with respect to liquid
   wmax = 0.5               ! maximum vertical motion
   endloop = .false.        ! determine when to stop model based on vertical motion input
 
@@ -272,7 +283,8 @@ program parcelmodel
 		 ivap,nl,dt,itemp,nfr,nlinit,nmrl, &
 		 iwcnuc,nhetin,radiusin,ipress,rnhetin,nactmr,thet, &
 		 sui,sl,naer,hetmodel,MRnucdep,MRnucfreez, &
-		 areain,Nlo,nhetfrz,firsthomog,iice,iliq,rhodrop)
+		 areain,Nlo,nhetfrz,firsthomog,iice,iliq,rhodrop, &
+		 ihabitchoice, habit)
 	endif
      
 	! Critical supersaturations for edge/edge growth assumption (M=10) from Julian's qualifying exam
@@ -298,7 +310,42 @@ program parcelmodel
 
 		   elseif(iicemodel.eq.2.or.iicemodel.eq.3.or.iicemodel.eq.4)then
 		   
-		   	call calcfluxes(Fa, Fc, ao(i), co(i), .true., Dv, Kt, Ls, drhovidT, ei, y(itemp), v_v)
+		    ! Adjustment of scrit for rosettes in platelike regimes to avoid impossible geometry
+
+		   	if(habit(i).ge.4)then
+		   	
+		   		if(habit(i).le.6)then
+                	pyrang = 45. * (pi/180.)
+        		else 
+                	pyrang = asin(1. - pi/(2.*REAL(habit(i))))
+       		    endif
+        		hpyr = ao(i)/tan(pi/2. - pyrang)
+		   	
+		   		scrit_a_temp = scrit_a
+		   		scrit_c_temp = scrit_c
+		   	
+		   		adj_factor = 10.
+		   		scritrat = scrit_c/scrit_a
+		   		adj_fraction = (2.*co(i) - hpyr * 1.2) / hpyr
+		   		scritrat = MIN(scritrat, 1 + adj_fraction ** 3. * adj_factor) 
+		   				   	
+		   		if(ao(i).lt.bsize)then
+		   		    ! Forced constraint to avoid blowing up the model
+		   			scritrat = MIN(scritrat, 1.)
+		   		endif
+		   		
+		   		scrit_a = scrit_c / scritrat
+
+		   	endif
+		   
+		   	call calcfluxes(Fa, Fc, ao(i), co(i), .true., Dv, Kt, Ls, drhovidT, ei, &
+		   	y(itemp), v_v, habit(i))
+		   	
+		   	! Revert scrit to previous value for next crystal
+		   	if(habit(i).ge.4)then
+		   		scrit_a = scrit_a_temp
+		   		scrit_c = scrit_c_temp
+		   	endif
 	
 		   	! Update alpha values for this ice bin 
 		   	! (alpha_ain and alpha_cin updated through common block)
@@ -314,7 +361,7 @@ program parcelmodel
 		   elseif(iicemodel.eq.2.or.iicemodel.eq.4)then
 			! a and c will be updated after the vode call instead
 			a(i) = ao(i)
-                        c(i) = co(i)
+            c(i) = co(i)
 		   elseif(iicemodel.eq.3)then
 			! Update a and c by simple timestepping
 			! a is an array to store the updated a and c dimensions in
@@ -391,10 +438,37 @@ program parcelmodel
               phio = co(i)/ao(i)
               IGR = alpha_c(i)/alpha_a(i)
               
+              
               phi(i) = phio * (V/Vo) ** ((IGR/phio - 1.)/(IGR/phio + 2.))
               
-              a(i) = (V/(2. * pi*phi(i)))**(1./3.)
-              c(i) = a(i) * phi(i)
+              if(habit(i).ge.4)then
+
+		   		if(habit(i).le.6)then
+                	pyrang = 45. * (pi/180.)
+        		else 
+                	pyrang = asin(1. - pi/(2.*REAL(habit(i))))
+       		    endif
+       		    ! xfac is a constant value corresponding to the volume loss from the pyramidal region
+        		xfac = (2./3.)/tan(pi/2. - pyrang)
+        		        		
+        		if((2 * phi(i) - xfac).le.0)then
+
+        			print*,"Error: rosette Aprism < 0! (stopping)"
+        		
+        			STOP
+        		
+        		endif
+        		
+        		a(i) = (V/(pi * REAL(habit(i)) * (2 * phi(i) - xfac)))**(1./3.)
+        		c(i) = a(i) * phi(i)
+        		
+        		hpyr = a(i) / tan(pi/2. - pyrang)
+
+        	  elseif(habit(i).eq.1)then
+              	a(i) = (V/(2. * pi*phi(i)))**(1./3.)
+              	c(i) = a(i) * phi(i)
+
+              endif
               
               ! Update phi, initial radius of an equivalent volume sphere, and a and c arrays
               rio(i) = y(j)
@@ -452,12 +526,12 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
      rhoxtal, m, IWC, MRi,nbicelim,msalt,ivap,nl,dt,itemp, &
      nfr,nlinit,nmrl,iwcnuc,nhetin,radiusin,ipress,rnhetin,nactmr, &
      thet,sui,sl,naerin,hetmodel,MRnucdep,MRnucfreez, &
-     areain,Nccn,nhetfrz,firsthomog,iice,iliq,rhodrop) 
+     areain,Nccn,nhetfrz,firsthomog,iice,iliq,rhodrop,ihabitchoice,habit) 
   
   IMPLICIT NONE
 
   INTEGER i,ji,nbice,ne, initdistflag, neqtot, nbliq, il, &
-       nbicelim, ili,itemp,ivap,ipress,hetmodel,iice,iliq
+       nbicelim, ili,itemp,ivap,ipress,hetmodel,iice,iliq,ihabitchoice
   PARAMETER(nbice = 5000, ne = nbice + 1, nbliq = 100, &
        neqtot = nbice + nbliq + 5)
   REAL ao(nbice), co(nbice), rio(nbice), y(neqtot), phi, Ni(nbice), &
@@ -478,6 +552,8 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
        tfmx4,fmx,deltag,Jhetclss,kboltz,hplnk,cis,kb,rstar, &
        cangle,deltan,nltotinit,numinaer,numindrop,MRliq,MRice
   real a0m,a1m,a2m,a3m,a4m
+  real randomnum
+  integer habit(nbice)
   logical firsthomog
   parameter (a0m=79.7,a1m=-0.12,a2m=-8.0481e-2,a3m=-3.2376e-3)
   common/ccnchar/vhoff,molmass,rhosolute
@@ -512,6 +588,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
 
   ! Do Deposition Freezing First
   iwcnuc = 0.0
+  
   if(nbicelim.eq.0.and.hetmodel.eq.1)then  ! nucleate only first time for het
      print*,'HETEROGENEOUS ICE NUCLEATION',nhetin,radiusin
      nbicelim = nbicelim + 1
@@ -529,6 +606,28 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
      iwcnuc = iwcnuc + ni(nbicelim)*4./3.*pi*y(ji)**3.* &
           rhoxtal(nbicelim)/dt
      nactmr = nactmr + nhetin/rhoa
+     
+     ! Assign habit
+     if(ihabitchoice.eq.1)then
+     	habit(nbicelim) = 1
+     elseif(ihabitchoice.eq.2)then
+        ! rosette with a random number of arms (4-12)
+     	CALL RANDOM_NUMBER(randomnum)
+        habit(nbicelim) = 4 + INT(randomnum * 9.)
+     elseif(ihabitchoice.eq.3)then
+        CALL RANDOM_NUMBER(randomnum)
+        ! rosette fraction specified by greater than term
+        if(randomnum.gt.0.5)then
+        	habit(nbicelim) = 1
+        else
+        ! rosette with a random number of arms (4-12)
+     	CALL RANDOM_NUMBER(randomnum)
+        habit(nbicelim) = 4 + INT(randomnum * 9.)
+        endif
+     elseif(ihabitchoice.ge.4)then
+     	habit(nbicelim) = ihabitchoice
+     endif
+
   endif
 
   rhostp = (1013.25*100.)/(289.*273.15)
@@ -752,6 +851,27 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
      rhoxtal(nbicelim) = 917.0
      iwcnuc = iwcnuc + ni(nbicelim)*4./3.*pi*y(ji)**3.* &
           rhoxtal(nbicelim)/dt
+          
+     ! Assign habit
+     if(ihabitchoice.eq.1)then
+     	habit(nbicelim) = 1
+     elseif(ihabitchoice.eq.2)then
+        ! rosette with a random number of arms (4-12)
+     	CALL RANDOM_NUMBER(randomnum)
+        habit(nbicelim) = 4 + INT(randomnum * 9.)
+     elseif(ihabitchoice.eq.3)then
+        CALL RANDOM_NUMBER(randomnum)
+        ! rosette fraction specified by greater than term
+        if(randomnum.gt.0.5)then
+        	habit(nbicelim) = 1
+        else
+        ! rosette with a random number of arms (4-12)
+     	CALL RANDOM_NUMBER(randomnum)
+        habit(nbicelim) = 4 + INT(randomnum * 9.)
+        endif
+     elseif(ihabitchoice.ge.4)then
+     	habit(nbicelim) = ihabitchoice
+     endif
   endif
 
   iwcnucfreez = iwcnuc
@@ -806,20 +926,21 @@ SUBROUTINE FunDiff(neqtot, t, y, dy, rpar, ipar)
   real ao(nbice), co(nbice), rio(nbice), alpha_a(nbice), alpha_c(nbice)
   real a(nbice), c(nbice)
   integer ipar(*)
+  integer habit(nbice)
   real rpar(*)
 
   COMMON/neqtotvars/itemp,ipress,ivap,iliq,iice,nbicelim
   COMMON/envvars/w,rhodrop, Nl,rdrp,rdrp0,rdryaer,Nmrl,Nmri
   COMMON/ccnvars/msalt
   common/ccnchar/vhoff,molmass,rhosolute
-  COMMON/icevars/ao,co,a,c,rio,alpha_a,alpha_c
+  COMMON/icevars/ao,co,a,c,rio,alpha_a,alpha_c,habit
 
   CALL liqGrowth(neqtot, y, dy, rhodrop, itemp, &
        ipress, ivap, Nl,msalt,rdrp,rdrp0, &
        rdryaer,GTP)
 
   call iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
-       ipress, ivap, Nmri, ao, co, a, c, rio, alpha_a, alpha_c)
+       ipress, ivap, Nmri, ao, co, a, c, rio, alpha_a, alpha_c, habit)
   
   CALL EnvEqns(neqtot,y,dy,w,itemp,ipress,ivap,iliq,iice, &
        nbliq,Nmrl,rhodrop,nbicelim,nbice,Nmri)
@@ -828,7 +949,7 @@ SUBROUTINE FunDiff(neqtot, t, y, dy, rpar, ipar)
 end SUBROUTINE FunDiff
 
 SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
-     ipress, ivap, Nmri, ao, co, a, c, rio, alpha_a, alpha_c)
+     ipress, ivap, Nmri, ao, co, a, c, rio, alpha_a, alpha_c, habit)
 
   implicit none
   integer neqtot,nbice,nbliq,i,j,itemp,ipress,ivap,iicemodel
@@ -845,6 +966,8 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
   real a(nbice), c(nbice)
   real Vo, V, IGR
   real rprev
+  real pyrang, xfac
+  integer habit(nbice)
   
   COMMON/inputvars/iicemodel
   COMMON/edgezzbren/sui,Ma,Mc,scrit_a,scrit_c,ha,hc,atot,ctot,alpha_ain,alpha_cin
@@ -896,10 +1019,16 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
             
             ! Calculate fluxes to prism and basal faces (appropriate variables updated)
             ! through common block edgezzbren
-            call calcfluxes(Fa, Fc, ao(i), co(i), .false., Dv, Kt, Ls, drhovidT, ei, y(itemp), v_v)
+            call calcfluxes(Fa, Fc, ao(i), co(i), .false., Dv, Kt, Ls, drhovidT, ei, & 
+            y(itemp), v_v, habit(i))
             
         	Ab = 2. * (Pi * (ao(i)**2.))
 	        Ap = 4. * Pi * ao(i) * co(i)
+	        
+	        if(habit(i).ge.4)then
+				Ab = Ab * REAL(habit(i))
+				Ap = Ap * REAL(habit(i))
+			endif
             
             ! Redistrubute flux onto an equivalent volume sphere
             dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhoi * y(j)**2.)
@@ -914,22 +1043,49 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
            	! Update phi
            	phio = co(i)/ao(i)
            	IGR = alpha_c(i)/alpha_a(i)
-           	
-           	if(V.gt.Vo)then
-            	phi = phio * (V/Vo) ** ((IGR/phio - 1.)/(IGR/phio + 2.))
-        	else
-            	phi = phio * (V/Vo) ** ((IGR/phio - 1.)/(IGR/phio + 2.))
-                endif
 
-            ! Update a and c
-           	a(i) = (V/(2.*pi*phi))**(1./3.)
+            phi = phio * (V/Vo) ** ((IGR/phio - 1.)/(IGR/phio + 2.))
+                
+            if(habit(i).ge.4)then
+
+		   		if(habit(i).le.6)then
+                	pyrang = 45. * (pi/180.)
+        		else 
+                	pyrang = asin(1. - pi/(2.*REAL(habit(i))))
+       		    endif
+       		    ! xfac is a constant value corresponding to the volume loss from the pyramidal region
+        		xfac = (2./3.)/tan(pi/2. - pyrang)
+        		        		
+        		if((2 * phi - xfac).le.0)then
+
+        			print*,"Error: rosette Aprism < 0! (stopping)"
+        		
+        			STOP
+        		
+        		endif
+        		
+        		a(i) = (V/(pi * REAL(habit(i)) * (2 * phi - xfac)))**(1./3.)
+
+        	  elseif(habit(i).eq.1)then
+              	a(i) = (V/(2. * pi*phi))**(1./3.)
+
+
+            endif
+
            	c(i) = a(i) * phi
            	
            	! Calculate basal and prism fluxes ()
-           	call calcfluxes(Fa, Fc, a(i), c(i), .false., Dv, Kt, Ls, drhovidT, ei, y(itemp), v_v)
+           	call calcfluxes(Fa, Fc, a(i), c(i), .false., Dv, Kt, Ls, drhovidT, ei, &
+           	y(itemp), v_v, habit(i))
         	
         	Ab = 2. * (Pi * (a(i)**2.))
 			Ap = 4. * Pi * a(i) * c(i)
+			
+			! Account for surface area of all of the arms
+			if(habit(i).ge.4)then
+				Ab = Ab * REAL(habit(i))
+				Ap = Ap * REAL(habit(i))
+			endif
         	
         	dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhoi * y(j)**2.)
         	    
@@ -1197,18 +1353,21 @@ END SUBROUTINE CalcVars
 ! alpha_ain and alpha_cin to their last calculated value before calling this subroutine.
 ! These fluxes follow faceted growth theory with ledges nucleated at the crystal edge.
 !*********************************************************************
-SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi, tempk, v_v)
+SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi, tempk, v_v, ihabit)
 
  implicit none
  
  logical icalcalpha
- integer itmax
+ integer itmax, ihabit
  real sui,Ma,Mc,scrit_a,scrit_c,ha,hc,atot,ctot,alpha_ain,alpha_cin
  real errabs, rel1, para, parb
  real aoin, coin, phio, pi, Rk, Rt
  real Dv, Kt, drhovidT, esi, Rv, v_v, tempk, Ls
  real capacitance, cap
  real Fa, Fc, Ab, Ap, avp, cvp, athp, cthp, fmax
+ 
+ ! variables specific to a rosette
+ real pyrang, hpyr  
  
  external funslocal
  
@@ -1220,9 +1379,39 @@ SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi,
 	! aspect ratio
 	phio = coin/aoin
 	
-	! facet areas
-	Ab = 2. * (Pi * (aoin**2.))
-	Ap = 4. * Pi * aoin * coin
+	! facet areas and capacitance
+	if(ihabit.eq.1)then
+		Ab = 2. * (Pi * (aoin**2.))
+		Ap = 4. * Pi * aoin * coin
+		! capacitance of a cylinder
+		cap = capacitance(aoin, coin, 1, 2)
+		
+		! h-functions
+		hc = Ab / (4. * pi * cap * coin)
+		ha = Ap / (4. * pi * cap * aoin)
+	elseif(ihabit.ge.4)then
+		! capacitance of a rosette
+		cap = capacitance(aoin, coin, 3, ihabit)
+		
+		! Slope of pyramidal region of a rosette (use n-arms solution for 7+ arms)
+		if(ihabit.le.6)then
+                pyrang = 45. * (pi/180.)
+        else 
+                pyrang = asin(1. - pi/(2.*REAL(ihabit)))
+        endif
+        
+        hpyr = aoin/tan(pi/2. - pyrang)
+        
+        Ab = 2. * (Pi * (aoin**2.))
+		Ap = 2. * Pi * aoin * (2.*coin - hpyr)
+		
+		! h-functions
+		hc = (Ab * REAL(ihabit)) / (4. * pi * cap * coin)
+		ha = (Ap * REAL(ihabit)) / (4. * pi * cap * aoin)
+	else
+		print*,"In calcfluxes habit", ihabit, " is not a valid habit choice."
+		STOP
+	endif
 	
 	! thermodynamic quantities
 	avp = (aoin * v_v) / (4. * Dv)
@@ -1233,13 +1422,6 @@ SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi,
 	cvp = avp * phio
 	cthp = athp * phio
 	ctot = cvp + cthp
-	
-	! capacitance of a cylinder
-	cap = capacitance(aoin, coin, 1, 2)
-	
-	! h-functions
-	hc = Ab / (4. * pi * cap * coin)
-	ha = Ap / (4. * pi * cap * aoin)
 	
 	! Inputs to Brent's routine and function call
 	errabs = 0.0
@@ -1261,6 +1443,10 @@ SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi,
 	Fmax = (0.25 * v_v * (sui * esi)/(Rv * tempk)) / (1. + Rk + Rt)
 	Fa = Fmax * alpha_ain
 	Fc = Fmax * alpha_cin
+	! Only one basal face for rosette
+	if(ihabit.ge.4)then
+		Fc = Fc / 2.
+	endif
 	if(sui.le.0.)then
 	   if(phio.gt.1)then
 		  Fa = Fmax/phio
@@ -1320,9 +1506,10 @@ subroutine findcritsats(tempc, scrit_a, scrit_c)
           sa = -0.71057 - 0.14775*tempc + 0.0042304*tempc**2
           sc = sa * scrit_ratio
       else
-      	 print*, "Temperature problem!", tempc
+      	 print*, "Temperature problem in findcritsats, stopping!", tempc
       	 sa = -32767
       	 sc = -32767
+      	 STOP
       endif
       
       scrit_a = sa/100.
@@ -1594,7 +1781,7 @@ function capacitance (adim, cdim, shape, nfacets)
     elseif(nfacets.lt.7)then
         capacitance = 0.40 * max((cdim/adim), 1.) ** -0.25 * (sqrt((4. * cdim)**2. + (2.*adim)**2.)) 
     else
-        capacitance = 0.40 * ((nfacets/6) ** 0.257) * (cdim/adim) ** -0.25 * &
+        capacitance = 0.40 * ((REAL(nfacets)/6.) ** 0.257) * (cdim/adim) ** -0.25 * &
         (sqrt((4. * cdim)**2. + (2.*adim)**2.))
     endif
   elseif(shape.eq.4)then
