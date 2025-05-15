@@ -82,7 +82,7 @@ program parcelmodel
                           ! 5 = No Heterogeneous Freezing
                           
   ! iicemodel: method for computing ice growth
-  iicemodel=0			  ! 0 = Basic spherical model (no effective diffusivity)
+  iicemodel=4			  ! 0 = Basic spherical model (no effective diffusivity)
                           ! 1 = Spheres (can choose constant deposition coeff alphaSphere)
 						  ! 2 = Faceted growth with spheroid approximation to adjust phi
 						  ! 3 = Faceted growth with adjusting a and c each full timestep
@@ -109,7 +109,7 @@ program parcelmodel
   TinitK = Tinit + To
   Pinit = 40000.0          ! initial pressure [Pa]
   ztopinit = 2000.0        ! Total cloud depth [m]
-  rhinit = 0.90             ! Initial relative humidity with respect to liquid
+  rhinit = 0.8             ! Initial relative humidity with respect to liquid
   wmax = 0.5               ! maximum vertical motion
   endloop = .false.        ! determine when to stop model based on vertical motion input
 
@@ -314,7 +314,7 @@ program parcelmodel
 		   elseif(iicemodel.eq.2.or.iicemodel.eq.4)then
 			! a and c will be updated after the vode call instead
 			a(i) = ao(i)
-			c(i) = co(i)
+                        c(i) = co(i)
 		   elseif(iicemodel.eq.3)then
 			! Update a and c by simple timestepping
 			! a is an array to store the updated a and c dimensions in
@@ -383,32 +383,39 @@ program parcelmodel
 		   co(i) = y(j)
            
            elseif (iicemodel.eq.2) then
-           ! Calculate volume change
-           Vo = (4./3.)*pi*rio(i)**3.
-           V =  (4./3.)*pi*y(j)**3.
+              ! Calculate volume change
+              Vo = (4./3.)*pi*rio(i)**3.
+              V =  (4./3.)*pi*y(j)**3.
            
-           ! Update phi
-           phio = co(i)/ao(i)
-           IGR = alpha_c(i)/alpha_a(i)
-           
-           phi(i) = phio * (V/Vo) ** ((IGR/phio - 1)/(IGR/phio + 2))
-           
-           a(i) = (V/(pi*phi(i)))**(1./3.)
-           c(i) = a(i) * phi(i)
-           
-           ! Update phi, initial radius of an equivalent volume sphere, and a and c arrays
-           rio(i) = y(j)
-           ao(i) = a(i)
-		   co(i) = c(i) 
-		   	
-		   elseif(iicemodel.eq.3.or.iicemodel.eq.4)then
+              ! Update phi
+              phio = co(i)/ao(i)
+              IGR = alpha_c(i)/alpha_a(i)
+              
+              phi(i) = phio * (V/Vo) ** ((IGR/phio - 1.)/(IGR/phio + 2.))
+              
+              a(i) = (V/(2. * pi*phi(i)))**(1./3.)
+              c(i) = a(i) * phi(i)
+              
+              ! Update phi, initial radius of an equivalent volume sphere, and a and c arrays
+              rio(i) = y(j)
+              ao(i) = a(i)
+              co(i) = c(i)
 
-			! Update beginning-of-timestep dimensions
-		   	rio(i) = y(j)
-           	ao(i) = a(i)
-		   	co(i) = c(i) 
+              if (y(j).le.0.) then
+                 print*,"Warning: ice crystal volume is negative!"
+                 y(j) = 0.
+                 ao(i) = 0.
+                 co(i) = 0.
+              endif
 		   	
-		   endif
+           elseif(iicemodel.eq.3.or.iicemodel.eq.4)then
+
+              ! Update beginning-of-timestep dimensions
+              rio(i) = y(j)
+              ao(i) = a(i)
+              co(i) = c(i) 
+		   	
+           endif
            
            !phi(i) = phio*((V/Vo)**((IGR(i) - 1.)/(IGR(i) + 2.)))
            
@@ -863,36 +870,36 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
         alpha_cin = alpha_c(i)
         
         if (iicemodel.eq.0) then
-        
-            G = ((((Ls/(Rv*y(itemp)))-1.)*(Ls/(Kt*y(itemp)))) + ((Rv*y(itemp)) &
+           
+           G = ((((Ls/(Rv*y(itemp)))-1.)*(Ls/(Kt*y(itemp)))) + ((Rv*y(itemp)) &
              	/(Dv*ei)))**(-1.) ! maximum diffusivity
-     
-        	dy(j) = (G*Sui)/(y(j)*rhoi)  
-     
+           
+           dy(j) = (G*Sui)/(y(j)*rhoi)  
+           
      	elseif (iicemodel.eq.1) then
-     	
-     		! Kinetically modified diffusivity
-     		! Note that we set alpha_a = alpha_c = const. in this model
-			Dvkin = Dv / ((4 * Dv)/(alpha_a(i) * v_v * y(j)) + 1)
+         
+         ! Kinetically modified diffusivity
+         ! Note that we set alpha_a = alpha_c = const. in this model
+           Dvkin = Dv / ((4 * Dv)/(alpha_a(i) * v_v * y(j)) + 1)
 			
-			! The equation with a and c dimensions (currently not used here)
-			!Dvkin = (2./3.) * Dv / ((4 * Dv * cap)/(alpha_a(i) * Ls * ao(i) * co(i)) + 1) + &
-			!(1./3.) * Dv / ((4 * Dv * cap)/(alpha_c(i) * Ls * ao(i) * ao(i)) + 1)
-		
-			G = ((((Ls/(Rv*y(itemp)))-1.)*(Ls/(Kt*y(itemp)))) + ((Rv*y(itemp)) &
-             	/(Dvkin*ei)))**(-1.) ! effective diffusivity
-     
-        	dy(j) = (G*Sui)/(y(j)*rhoi)
-
-		
-		elseif (iicemodel.eq.2.or.iicemodel.eq.3) then
+         ! The equation with a and c dimensions (currently not used here)
+         !Dvkin = (2./3.) * Dv / ((4 * Dv * cap)/(alpha_a(i) * Ls * ao(i) * co(i)) + 1) + &
+         !(1./3.) * Dv / ((4 * Dv * cap)/(alpha_c(i) * Ls * ao(i) * ao(i)) + 1)
+         
+            G = ((((Ls/(Rv*y(itemp)))-1.)*(Ls/(Kt*y(itemp)))) + ((Rv*y(itemp)) &
+              /(Dvkin*ei)))**(-1.) ! effective diffusivity
+         
+            dy(j) = (G*Sui)/(y(j)*rhoi)
+         
+         
+           elseif (iicemodel.eq.2.or.iicemodel.eq.3) then
             
             ! Calculate fluxes to prism and basal faces (appropriate variables updated)
             ! through common block edgezzbren
             call calcfluxes(Fa, Fc, ao(i), co(i), .false., Dv, Kt, Ls, drhovidT, ei, y(itemp), v_v)
             
         	Ab = 2. * (Pi * (ao(i)**2.))
-			Ap = 4. * Pi * ao(i) * co(i)
+	        Ap = 4. * Pi * ao(i) * co(i)
             
             ! Redistrubute flux onto an equivalent volume sphere
             dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhoi * y(j)**2.)
@@ -905,17 +912,17 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
            	V =  (4./3.)*pi*y(j)**3.
            
            	! Update phi
-           	phio = c(i)/a(i)
+           	phio = co(i)/ao(i)
            	IGR = alpha_c(i)/alpha_a(i)
            	
            	if(V.gt.Vo)then
             	phi = phio * (V/Vo) ** ((IGR/phio - 1.)/(IGR/phio + 2.))
         	else
             	phi = phio * (V/Vo) ** ((IGR/phio - 1.)/(IGR/phio + 2.))
-            endif
+                endif
 
             ! Update a and c
-           	a(i) = (V/(pi*phi))**(1./3.)
+           	a(i) = (V/(2.*pi*phi))**(1./3.)
            	c(i) = a(i) * phi
            	
            	! Calculate basal and prism fluxes ()
@@ -927,7 +934,7 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
         	dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhoi * y(j)**2.)
         	    
         	! Update value for previous radius        
-        	rio(i) = y(j)
+        	!rio(i) = y(j)
         
         endif
      endif
