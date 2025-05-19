@@ -33,7 +33,7 @@ program parcelmodel
   integer nbicelim,hetmodel
   real alpha_a(nbice),alpha_c(nbice),Nmri(nbice),Ni(nbice)
   real ao(nbice),co(nbice),cinit(nbice),ainit(nbice),a(nbice),c(nbice),aavg,cavg
-  real rhoxtal(nbice),rhodep(nbice),phi(nbice),rio(nbice),riotimestep(nbice)
+  real rhoxtal(nbice),rhodep(nbice),phi(nbice),rio(nbice),xhol(nbice)
   real IWC,MRi,nfr(nbice),iwcnuc,nhetin,rnhetin,nacmr,thet
   real sui,suiratio,naer,naermr,MRnucdep,MRnucfreez,areain
   real nhetlo,nhethi,nactmr,ei,qeqi,qeql,m,Ntoti,ravgi
@@ -49,7 +49,7 @@ program parcelmodel
   real pi,Rd,Rv,cp,grav,dt,To,w,rhoa
   real press,wmax,zalt,vapmr,nosc,tau_osc
   real qlsat,RH,FLHS
-  real esi_new,es_new,funslocal,capacitance
+  real esi_new,es_new,funslocal,capacitance,hollowfrac
   real errabs, rel1
   
   ! thermodynamic variables
@@ -85,13 +85,13 @@ program parcelmodel
                           ! 5 = No Heterogeneous Freezing
                           
   ! ihabitchoice: 				  
-  ihabitchoice=1          ! 1 = single crystals
+  ihabitchoice=6          ! 1 = single crystals
   					      ! 2 = rosettes (random number of arms)
   						  ! 3 = combination of single crystals and rosettes (random num of arms)
   						  ! 4 - 12 = n-arm rosettes
                           
   ! iicemodel: method for computing ice growth
-  iicemodel=2			  ! 0 = Basic spherical model (no effective diffusivity)
+  iicemodel=3			  ! 0 = Basic spherical model (no effective diffusivity)
                           ! 1 = Spheres (can choose constant deposition coeff alphaSphere)
 						  ! 2 = Faceted growth with spheroid approximation to adjust phi
 						  ! 3 = Faceted growth with adjusting a and c each full timestep
@@ -116,7 +116,7 @@ program parcelmodel
   Ma = 10.                 ! growth mode for prism (a) face
   Mc = 10.                 ! growth mode for basal (c) face
   alphaSphere = 1          ! constant deposition coefficient if using spherical model
-  Tinit = -7.             ! initial temperature [C]
+  Tinit = -10.             ! initial temperature [C]
   TinitK = Tinit + To
   Pinit = 40000.0          ! initial pressure [Pa]
   ztopinit = 2000.0        ! Total cloud depth [m]
@@ -143,7 +143,7 @@ program parcelmodel
   if(hetmodel.eq.1)then   ! instantaneous concentration per liter
      nhetlo = 1.e-4         
      nhethi = 400.         
-     nhetin = 0.1
+     nhetin = 1.
   endif
   if(hetmodel.eq.2)then
      nhetlo = 0.01          ! Demott (2015), concentration of aerosol per cc 
@@ -178,6 +178,12 @@ program parcelmodel
   if(iwvel.eq.2)then
      nt = int(nosc*ztopinit/wmax/dt)         ! if using a constant vertical motion
   endif
+  print*,"Model initial conditions"
+  print*,"T = ", Tinit, " C"
+  print*,"pinit = ",  pinit/100., " hPa" 
+  print*,"rhinit = ", + rhinit * 100., " percent"
+  print*,"cloud depth = ", + ztopinit, " m"
+  print*,"max w = ", wmax, " m/s"
   print*,"Elapsed time in model is ", int(nt * dt), "seconds"
 
   ! "pointers" to environmental variables
@@ -233,7 +239,7 @@ program parcelmodel
      ao(i) = 0.0
      co(i) = 0.0
      rio(i) = 0.0
-     riotimestep(i) = 0.0
+	 xhol(i) = 0.0
      ainit(i) = 0.0
      cinit(i) = 0.0
      a(i) = 0.0
@@ -295,8 +301,6 @@ program parcelmodel
 		j = nbliq + i
 		if(y(j) .ne. 0.0)then
 		
-		   riotimestep(i) = rio(i)
-		
 		   ! Calculate alpha values for each ice crystal bin.
 		   if(iicemodel.eq.0)then
 
@@ -337,6 +341,10 @@ program parcelmodel
 		   		scrit_a = scrit_c / scritrat
 
 		   	endif
+		   	
+		   	! Predict hollowing fraction from laboratory measurements at -40C
+		   	! (effects of hollowing on growth not implemented yet)
+		   	xhol(i) = hollowfrac(sui, scrit_c)
 		   
 		   	call calcfluxes(Fa, Fc, ao(i), co(i), .true., Dv, Kt, Ls, drhovidT, ei, &
 		   	y(itemp), v_v, habit(i))
@@ -437,9 +445,11 @@ program parcelmodel
               ! Update phi
               phio = co(i)/ao(i)
               IGR = alpha_c(i)/alpha_a(i)
-              
+              !IGR = 2.1
               
               phi(i) = phio * (V/Vo) ** ((IGR/phio - 1.)/(IGR/phio + 2.))
+              !phi(i) = phio * (V/Vo) ** ((IGR - 1.)/(IGR + 2.))
+              !print*,a(i),c(i),phi(i),y(j)
               
               if(habit(i).ge.4)then
 
@@ -590,7 +600,9 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
   iwcnuc = 0.0
   
   if(nbicelim.eq.0.and.hetmodel.eq.1)then  ! nucleate only first time for het
-     print*,'HETEROGENEOUS ICE NUCLEATION',nhetin,radiusin
+     print*,'Instantaneous heterogenous nucleation selected'
+     print*,'Heterogenous INP concentration ', nhetin, ' per L'
+     print*,'Initial ice radius (assumed a = c) ', radiusin * 1.e6, ' microns' 
      nbicelim = nbicelim + 1
      ji = nbliq + nbicelim
      ni(nbicelim) = nhetin*1000.  ! concentration comes in per liter
@@ -1092,8 +1104,8 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
         	! Update value for previous radius        
         	!rio(i) = y(j)
         
-        endif
-     endif
+      endif
+   endif
   enddo
 
   return
@@ -1715,6 +1727,43 @@ function funslocal(slocalguess)
   
 RETURN
 END FUNCTION funslocal
+
+
+!**********************************************************************
+!     Parameterization for predicting the unhollowed basal face
+!     ring width from environmental conditions and crystal dimensions.
+!     Return: aring/a (1 - hollowing fraction)
+!**********************************************************************
+function hollowfrac(sicein, scritcin)
+
+	implicit none
+
+	real sicein, sice, scritcin, scritc, scrithol, A, B
+	real hollowfrac
+	
+	! Scaling parameters for equation
+	A = 0.315
+	B = 1.537
+	
+	! Multiply supersats by 100 (allows parameters A and B to be closer to unity)
+	sice = sicein * 100.
+	scritc = scritcin * 100.
+	scrithol = B * scritc
+
+	! Can only have hollowing for supersat above scrithol
+	if(sice.ge.scrithol)then
+		hollowfrac = 1. - (A * scritc)/(sice - scrithol)
+	else
+		hollowfrac = 0.
+	endif
+	
+	! Predicted ring width is larger than a; crystal is not hollow
+	if(hollowfrac.lt.0)then
+		hollowfrac = 0.
+	endif
+  
+RETURN
+END FUNCTION hollowfrac
 
 
 !**********************************************************************
