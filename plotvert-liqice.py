@@ -6,7 +6,7 @@ outdir = './outdir/'
 infile = outdir + 'parceltime-liqice.dat'
 
 tcolumns = ['tc','zalt','temp','press', 'qvap','qliq','qice','RH', 'Ntot',
- 'Nctot', 'ravg', 'rcavg', 'Ntoti', 'ravgi','aavg','cavg']
+ 'Nctot', 'ravg', 'rcavg', 'Ntoti', 'ravgi','aavg','cavg','xholavg']
 datas = np.genfromtxt(fname = infile, dtype = 'float', names=tcolumns)
 qtot = datas['qvap'] + datas['qliq'] + datas['qice']
 
@@ -50,11 +50,14 @@ ax5.set_ylabel(r'concentration [# cm$^{-3}$]')
 ax6 = fig1.add_subplot(2, 3, 6)
 ax6.plot(datas['tc'],datas['rcavg'],linestyle = '-', color = 'k',label='liquid')
 ax6.plot(datas['tc'],datas['ravgi'],linestyle = '--', color = 'magenta',label='ice')
+ax6.plot(datas['tc'],datas['aavg'] * (1 - datas['xholavg']),linestyle = '-', color = 'pink',linewidth=1,label='ice,aring')
 ax6.plot(datas['tc'],datas['aavg'],linestyle = '-', color = 'red',linewidth=1,label='ice,a')
 ax6.plot(datas['tc'],datas['cavg'],linestyle = '-', color = 'blue',linewidth=1,label='ice,c')
 ax6.set_xlabel('time [s]')
 ax6.set_ylabel(r'average radius [$\mu$m]')
 ax6.legend()
+
+plt.savefig('timeplot-liqice.pdf')
 
 fig2 = plt.figure(figsize = (14, 7))
 ax1 = fig2.add_subplot(2, 3, 1)
@@ -84,7 +87,7 @@ ax4.legend()
 ax5 = fig2.add_subplot(2, 3, 5)
 ax5.plot(datas['Nctot'],datas['zalt'],linestyle = '-', color = 'k',label='cloud')
 ax5.plot(datas['Ntot'],datas['zalt'],linestyle = '--', color = 'k',label='CCN + cloud')
-ax5.plot(datas['Ntoti'],datas['zalt'],linestyle = '--', color = 'firebrick',label='ice')
+ax5.plot(datas['Ntoti'],datas['zalt'],linestyle = '--', color = 'magenta',label='ice')
 ax5.set_xscale('log')
 ax5.set_xlim(0.001,500.)
 ax5.set_ylabel('height [m]')
@@ -95,6 +98,7 @@ ax6 = fig2.add_subplot(2, 3, 6)
 ax6.plot(datas['rcavg'],datas['zalt'],linestyle = '-', color = 'k',label='cloud')
 ax6.plot(datas['ravg'],datas['zalt'],linestyle = '--', color = 'k',label='total')
 ax6.plot(datas['ravgi'],datas['zalt'],linestyle = '--', color = 'magenta',label='ice')
+ax6.plot(datas['aavg'] * (1 - datas['xholavg']),datas['zalt'],linestyle = '-', color = 'pink',linewidth=1,label='ice,aring')
 ax6.plot(datas['aavg'],datas['zalt'],linestyle = '-', color = 'red',linewidth=1,label='ice,a')
 ax6.plot(datas['cavg'],datas['zalt'],linestyle = '-', color = 'blue',linewidth=1,label='ice,c')
 ax6.set_ylabel('height [m]')
