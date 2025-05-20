@@ -18,7 +18,7 @@ program parcelmodel
   ! index/tolerance variables
   ! Note: don't be silly and accidentally define itmax as a real in some function.
   integer k,ivap,ipress,itemp,iliq,iice,nt
-  integer iwvel,isolute,i,j,iicemodel,itmax
+  integer iwvel,isolute,i,j,iicemodel,itmax,ihollow
   real para, parb
 
   ! liquid variables
@@ -38,15 +38,15 @@ program parcelmodel
   real sui,suiratio,naer,naermr,MRnucdep,MRnucfreez,areain
   real nhetlo,nhethi,nactmr,ei,qeqi,qeql,m,Ntoti,ravgi
   real Ma,Mc,scrit_a,scrit_c,ha,hc,atot,ctot,alpha_ain,alpha_cin,alphaSphere
-  real avp, athp, cvp, cthp, cap, phio, ab, ap, IGR, Vo, V
-  real Rk, Rt, Fmax, Fa, Fc, drho, negsui
+  real avp, athp, cvp, cthp, cap, phio, Ab, Absol, Ap, IGR, Vo, V
+  real Rk, Rt, Fmax, Fa, Fc, drho, negsui, xholinit, xholavg
   ! extra rosette-related variables
   real scrit_a_temp, scrit_c_temp, scritrat, adj_fraction, adj_factor, hpyr, pyrang, xfac, bsize
   integer habit(nbice), ihabitchoice
   
   ! other variables / constants / functions to get variables
   real Tinit,TinitK,Pinit,ztopinit,RHinit
-  real pi,Rd,Rv,cp,grav,dt,To,w,rhoa
+  real pi,Rd,Rv,cp,grav,dt,To,w,rhoa,rhoi
   real press,wmax,zalt,vapmr,nosc,tau_osc
   real qlsat,RH,FLHS
   real esi_new,es_new,funslocal,capacitance,hollowfrac
@@ -65,7 +65,7 @@ program parcelmodel
   common/ccnchar/vhoff,molmass,rhosolute  
   COMMON/inputvars/iicemodel
   ! Arrays for information pertaining to the a and c dimensions of ice
-  COMMON/icevars/ao,co,a,c,rio,alpha_a,alpha_c,habit
+  COMMON/icevars/ao,co,a,c,rio,alpha_a,alpha_c,habit,xhol,rhoxtal,rhodep
   ! Input variables into root finding method for determining alpha
   COMMON/edgezzbren/sui,Ma,Mc,scrit_a,scrit_c,ha,hc,atot,ctot,alpha_ain,alpha_cin
   
@@ -84,18 +84,22 @@ program parcelmodel
                           ! 4 = Classical Theory (KC, 2004, 2009)
                           ! 5 = No Heterogeneous Freezing
                           
-  ! ihabitchoice: 				  
+  ! ihabitchoice: habit class for ice crystals				  
   ihabitchoice=6          ! 1 = single crystals
   					      ! 2 = rosettes (random number of arms)
   						  ! 3 = combination of single crystals and rosettes (random num of arms)
   						  ! 4 - 12 = n-arm rosettes
                           
   ! iicemodel: method for computing ice growth
-  iicemodel=3			  ! 0 = Basic spherical model (no effective diffusivity)
+  iicemodel=2			  ! 0 = Basic spherical model (no effective diffusivity)
                           ! 1 = Spheres (can choose constant deposition coeff alphaSphere)
 						  ! 2 = Faceted growth with spheroid approximation to adjust phi
 						  ! 3 = Faceted growth with adjusting a and c each full timestep
 						  ! 4 = Faceted growth with recalculating dimensions within VODE
+  ! ihollow: allow ice crystals to hollow 
+  ihollow=2				  ! 0 = No hollowing
+  						  ! 1 = User-selected constant hollowing fraction
+  						  ! 2 = Parameterization for hollowing prediction (function hollowfrac)
   ! Size at which rosettes begin to branch (set scrits to be the same for smaller crystals)
   bsize=1.e-5
 
@@ -110,13 +114,15 @@ program parcelmodel
   cp = 1004.5			   ! specific heat capacity of air at constant pressure
   grav = 9.81			   ! acceleration due to gravity
   To = 273.15              ! Reference temperature (0C)
+  rhoi = 917.              ! density of solid ice
   
   ! initial conditions / model parameters
   dt = 1.0                 ! parcel model time step
   Ma = 10.                 ! growth mode for prism (a) face
   Mc = 10.                 ! growth mode for basal (c) face
   alphaSphere = 1          ! constant deposition coefficient if using spherical model
-  Tinit = -10.             ! initial temperature [C]
+  xholinit = 0.7	       ! fraction of basal face width that is hollow (if ihollow = 1)
+  Tinit = -30.             ! initial temperature [C]
   TinitK = Tinit + To
   Pinit = 40000.0          ! initial pressure [Pa]
   ztopinit = 2000.0        ! Total cloud depth [m]
@@ -306,11 +312,13 @@ program parcelmodel
 
 		   	alpha_a(i) = 1.
 		   	alpha_c(i) = 1.
+		    rhodep(i) = rhoi
 
 		   elseif(iicemodel.eq.1)then
 
 		   	alpha_a(i) = alphaSphere
 		   	alpha_c(i) = alphaSphere
+		    rhodep(i) = rhoi
 
 		   elseif(iicemodel.eq.2.or.iicemodel.eq.3.or.iicemodel.eq.4)then
 		   
@@ -344,10 +352,19 @@ program parcelmodel
 		   	
 		   	! Predict hollowing fraction from laboratory measurements at -40C
 		   	! (effects of hollowing on growth not implemented yet)
-		   	xhol(i) = hollowfrac(sui, scrit_c)
+		   	if(ihollow.eq.0)then
+		   		xhol(i) = 0.
+		   	elseif(ihollow.eq.1)then
+		   		xhol(i) = xholinit
+		   	elseif(ihollow.eq.2)then
+		   		xhol(i) = hollowfrac(sui, scrit_c)
+		   	endif
 		   
 		   	call calcfluxes(Fa, Fc, ao(i), co(i), .true., Dv, Kt, Ls, drhovidT, ei, &
-		   	y(itemp), v_v, habit(i))
+		   	y(itemp), v_v, habit(i), xhol(i), Ab, Absol, Ap)
+		   					
+			! Calculate deposition density (from ratio of flux rates)
+			rhodep(i) = rhoi * (Fa * Ap + Fc * Ab)/(Fa * Ap + Fc * Absol)
 		   	
 		   	! Revert scrit to previous value for next crystal
 		   	if(habit(i).ge.4)then
@@ -374,8 +391,8 @@ program parcelmodel
 			! Update a and c by simple timestepping
 			! a is an array to store the updated a and c dimensions in
 			! until the timestep is completed
-			a(i) = ao(i) + (Fa/917.) * dt
-			c(i) = co(i) + (Fc/917.) * dt
+			a(i) = ao(i) + (Fa/rhoi) * dt
+			c(i) = co(i) + (Fc/rhoi) * dt
 			if(a(i).le.1.e-7)then
 				a(i) = 1.e-7
 			endif
@@ -440,7 +457,12 @@ program parcelmodel
            elseif (iicemodel.eq.2) then
               ! Calculate volume change
               Vo = (4./3.)*pi*rio(i)**3.
-              V =  (4./3.)*pi*y(j)**3.
+              V =  (4./3.)*pi*y(j)**3.             
+                          
+              !print*, 'depd, effd', rhodep(i), rhoxtal(i)
+              
+              ! Update effective density
+              rhoxtal(i) = rhoxtal(i) * (Vo/V) + rhodep(i) * (1. - Vo/V)
            
               ! Update phi
               phio = co(i)/ao(i)
@@ -458,6 +480,8 @@ program parcelmodel
         		else 
                 	pyrang = asin(1. - pi/(2.*REAL(habit(i))))
        		    endif
+       		    ! I did the math wrong!!
+       		    
        		    ! xfac is a constant value corresponding to the volume loss from the pyramidal region
         		xfac = (2./3.)/tan(pi/2. - pyrang)
         		        		
@@ -510,12 +534,17 @@ program parcelmodel
            ravgi = ravgi + y(j)*1.e6*Nmri(i)*rhoa
            aavg =  aavg + ao(i)*1.e6*Nmri(i)*rhoa
            cavg =  cavg + co(i)*1.e6*Nmri(i)*rhoa
+           xholavg =  xholavg + xhol(i)*Nmri(i)*rhoa
 
         endif
      enddo
      ravgi = ravgi/(max(1.e-10,Ntoti))
-     aavg = aavg / Ntoti
-     cavg = cavg / Ntoti
+     aavg = aavg /(max(1.e-10,Ntoti))
+     cavg = cavg /(max(1.e-10,Ntoti))
+     xholavg = xholavg / (max(1.e-10,Ntoti))
+     if(ihollow.eq.0.or.xholavg.ge.1.)then
+     	xholavg = 0.
+     endif
 
      zalt = zalt + w*dt
      qlsat = es_new(y(itemp))*Rd/(Rv*y(ipress))
@@ -523,7 +552,7 @@ program parcelmodel
      write(20,'(45E16.8)')tc,zalt,y(itemp)-To,y(ipress)/100. &
           ,y(ivap)*1000.,y(iliq)*1000.,y(iice)*1000.,RH, &
           Ntot/100.**3,Nctot/100.**3,ravg,rcavg,Ntoti/100.**3,ravgi, &
-          aavg, cavg
+          aavg, cavg, xholavg
      
      k = k + int(dt)
      tc = tc + dt
@@ -556,7 +585,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
        areain,chet,mhet,Nfrzhet,Jhet,xhet,volin,radin,fracin,Nccn, &
        nhetfrz(nbliq),sfctens,rhol,Acurve,rhodrop(nbliq)
   real aw_i,daw,x,j,ffr,sumni,sumnl,P,Rd,tempk,presspa,MRnuc
-  real aw2,vhoff,molmass,rhosolute
+  real aw2,vhoff,molmass,rhosolute,rhoi
   real tc,tempc,mmolec,dgact,dgactmks,sigiw,lem,lhm0,rgg,tmelt, &
        t0,rgerm1,rhoihet,rgerm,xx,xm,tfmx1,tfmx2,tfmx3, &
        tfmx4,fmx,deltag,Jhetclss,kboltz,hplnk,cis,kb,rstar, &
@@ -593,6 +622,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
   Mwat = 0.018015             !kg
   sfcTens = 7.5e-2          !N/m
   rhol = 1000.0
+  rhoi = 917.
 
   Acurve = (2.0*Mwat*sfcTens)/(Rstar*tempk*rhol) !curvature term
 
@@ -612,7 +642,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
      ainit(nbicelim) = y(ji)
      cinit(nbicelim) = y(ji)
      rio(nbicelim) = y(ji)
-     rhoxtal(nbicelim) = 920.0
+     rhoxtal(nbicelim) = 917.0
      nmri(nbicelim) = ni(nbicelim)/rhoa
      !nactmr = nactmr + nmr(nbicelim)*rhoa
      iwcnuc = iwcnuc + ni(nbicelim)*4./3.*pi*y(ji)**3.* &
@@ -669,7 +699,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
     	ainit(nbicelim) = y(ji)
         cinit(nbicelim) = y(ji)
         rio(nbicelim) = y(ji)
-        rhoxtal(nbicelim) = 917.0
+        rhoxtal(nbicelim) = rhoi
         nmri(nbicelim) = ni(nbicelim)/rhoa
         iwcnuc = iwcnuc + ni(nbicelim)*4./3.*pi*y(ji)**3.* &
              rhoxtal(nbicelim)/dt
@@ -718,7 +748,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
         if(nfrzinst.gt.0.0) firsthomog = .true.
      endif
      Nfrz = Nfrz + nfrzinst
-     rfrz = rfrz + nfrzinst * y(i)*(rhodrop(i)/920.)**0.333333
+     rfrz = rfrz + nfrzinst * y(i)*(rhodrop(i)/rhoi)**0.333333
      Mfrz = Mfrz + nfrzinst * &
           4./3.*pi*(y(i))**3. * rhodrop(i)
      if(ffr.gt.0.0) ncnt =ncnt + 1.
@@ -756,7 +786,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
         nhetfrz(i) = nhetfrz(i) + nfrzinst
         Nfrzhet = Nfrzhet + nfrzinst ! ffr*nlinit(i)
         Nfrz = Nfrz + nfrzinst
-        rfrz = rfrz + nfrzinst * y(i)*(rhodrop(i)/920.)**0.33
+        rfrz = rfrz + nfrzinst * y(i)*(rhodrop(i)/rhoi)**0.33
         Mfrz = Mfrz + nfrzinst * &
              4./3.*pi*(y(i))**3. * rhodrop(i)
         if(ffr.gt.0.0) ncnt =ncnt + 1.
@@ -834,7 +864,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
         nhetfrz(i) = nhetfrz(i) + nfrzinst
         Nfrzhet = Nfrzhet + nfrzinst ! ffr*nlinit(i)
         Nfrz = Nfrz + nfrzinst
-        rfrz = rfrz + nfrzinst * y(i)*(rhodrop(i)/920.)**0.33
+        rfrz = rfrz + nfrzinst * y(i)*(rhodrop(i)/rhoi)**0.33
         Mfrz = Mfrz + nfrzinst *  &
              4./3.*pi*(y(i))**3. * rhodrop(i)
         if(ffr.gt.0.0) ncnt = ncnt + 1.
@@ -853,7 +883,7 @@ SUBROUTINE homhetfreezing(ao, co, ainit, cinit, rio, y, Ni, Nmri, rhoa,  &
      ji = nbicelim + nbliq
      nfr(nbicelim) = Nfrz
      ni(nbicelim) = nfr(nbicelim)*rhoa
-     y(ji) = (Mfrz/Nfrz * 3./(4.*pi*917.))**0.33333333
+     y(ji) = (Mfrz/Nfrz * 3./(4.*pi*rhoi))**0.33333333
      ao(nbicelim) = y(ji)
      co(nbicelim) = y(ji)
      ainit(nbicelim) = y(ji)
@@ -935,8 +965,8 @@ SUBROUTINE FunDiff(neqtot, t, y, dy, rpar, ipar)
   real Nmrl(nbliq),msalt(nbliq),vhoff,molmass,rhosolute
   real rdryaer(nbliq),Nmri(nbice),GTP,Sui,qisat,es,ei,es_new,esi_new
   real Rd,Rv
-  real ao(nbice), co(nbice), rio(nbice), alpha_a(nbice), alpha_c(nbice)
-  real a(nbice), c(nbice)
+  real ao(nbice), co(nbice), rio(nbice), alpha_a(nbice), alpha_c(nbice), xhol(nbice)
+  real a(nbice), c(nbice), rhoxtal(nbice), rhodep(nbice)
   integer ipar(*)
   integer habit(nbice)
   real rpar(*)
@@ -945,23 +975,23 @@ SUBROUTINE FunDiff(neqtot, t, y, dy, rpar, ipar)
   COMMON/envvars/w,rhodrop, Nl,rdrp,rdrp0,rdryaer,Nmrl,Nmri
   COMMON/ccnvars/msalt
   common/ccnchar/vhoff,molmass,rhosolute
-  COMMON/icevars/ao,co,a,c,rio,alpha_a,alpha_c,habit
+  COMMON/icevars/ao,co,a,c,rio,alpha_a,alpha_c,habit,xhol,rhoxtal,rhodep
 
   CALL liqGrowth(neqtot, y, dy, rhodrop, itemp, &
        ipress, ivap, Nl,msalt,rdrp,rdrp0, &
        rdryaer,GTP)
 
   call iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
-       ipress, ivap, Nmri, ao, co, a, c, rio, alpha_a, alpha_c, habit)
+       ipress, ivap, Nmri, ao, co, a, c, rio, alpha_a, alpha_c, habit, xhol, rhoxtal, rhodep)
   
   CALL EnvEqns(neqtot,y,dy,w,itemp,ipress,ivap,iliq,iice, &
-       nbliq,Nmrl,rhodrop,nbicelim,nbice,Nmri)
+       nbliq,Nmrl,rhodrop,nbicelim,nbice,Nmri,rhoxtal,rhodep)
        
   return
 end SUBROUTINE FunDiff
 
 SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
-     ipress, ivap, Nmri, ao, co, a, c, rio, alpha_a, alpha_c, habit)
+     ipress, ivap, Nmri, ao, co, a, c, rio, alpha_a, alpha_c, habit, xhol, rhoxtal, rhodep)
 
   implicit none
   integer neqtot,nbice,nbliq,i,j,itemp,ipress,ivap,iicemodel
@@ -970,12 +1000,12 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
   real es_new,esi_new,flhs
   
   !for flux calculations
-  real v_v, pi, drhovidT, Ab, Ap
+  real v_v, pi, drhovidT, Ab, Absol, Ap
   real avp, athp, atot, cvp, cthp, ctot, hc, ha, cap
   real phio, phi, Rk, Rt, Fmax, drho, Fa, Fc, Favg, suiratio, rhoa, sl
   real Ma, Mc, scrit_a, scrit_c, alpha_ain, alpha_cin
-  real ao(nbice), co(nbice), rio(nbice), alpha_a(nbice), alpha_c(nbice)
-  real a(nbice), c(nbice)
+  real ao(nbice), co(nbice), rio(nbice), alpha_a(nbice), alpha_c(nbice), xhol(nbice)
+  real a(nbice), c(nbice), rhodep(nbice), rhoxtal(nbice)
   real Vo, V, IGR
   real rprev
   real pyrang, xfac
@@ -1032,18 +1062,18 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
             ! Calculate fluxes to prism and basal faces (appropriate variables updated)
             ! through common block edgezzbren
             call calcfluxes(Fa, Fc, ao(i), co(i), .false., Dv, Kt, Ls, drhovidT, ei, & 
-            y(itemp), v_v, habit(i))
-            
-        	Ab = 2. * (Pi * (ao(i)**2.))
-	        Ap = 4. * Pi * ao(i) * co(i)
+            y(itemp), v_v, habit(i), xhol(i), Ab, Absol, Ap)
 	        
 	        if(habit(i).ge.4)then
 				Ab = Ab * REAL(habit(i))
 				Ap = Ap * REAL(habit(i))
 			endif
-            
-            ! Redistrubute flux onto an equivalent volume sphere
-            dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhoi * y(j)**2.)
+        	
+        	if (iicemodel.eq.3) then
+        	    dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhoi * y(j)**2.)
+        	else
+        		dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhodep(i) * y(j)**2.)
+        	endif
             
         elseif (iicemodel.eq.4) then
         
@@ -1088,10 +1118,7 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
            	
            	! Calculate basal and prism fluxes ()
            	call calcfluxes(Fa, Fc, a(i), c(i), .false., Dv, Kt, Ls, drhovidT, ei, &
-           	y(itemp), v_v, habit(i))
-        	
-        	Ab = 2. * (Pi * (a(i)**2.))
-			Ap = 4. * Pi * a(i) * c(i)
+           	y(itemp), v_v, habit(i), Ab, Absol, Ap)
 			
 			! Account for surface area of all of the arms
 			if(habit(i).ge.4)then
@@ -1099,7 +1126,7 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
 				Ap = Ap * REAL(habit(i))
 			endif
         	
-        	dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhoi * y(j)**2.)
+        	dy(j) = (Ab * Fc + Ap * Fa) / (4 * Pi * rhodep(i) * y(j)**2.)
         	    
         	! Update value for previous radius        
         	!rio(i) = y(j)
@@ -1139,7 +1166,7 @@ SUBROUTINE liqGrowth(neqtot, y, dy, &
   Mw = 0.018015             !kg
   R = 8.314                 ! J/molK
   sfcTens = 7.5e-2          !N/m
-  rhol = 1000.0   
+  rhol = 1000.0
   tempk = y(itemp) 
   Lv = FLHV(tempk)
 
@@ -1191,21 +1218,22 @@ SUBROUTINE liqGrowth(neqtot, y, dy, &
 END SUBROUTINE liqGrowth
 
 subroutine EnvEqns(neqtot,y,dy,w,itemp,ipress,ivap,iliq,iice, &
-     nbliq,Nmrl,rhodrop,nbicelim,nbice,Nmri)
+     nbliq,Nmrl,rhodrop,nbicelim,nbice,Nmri,rhoxtal,rhodep)
 
   implicit none
 
-  integer neqtot,itemp,ipress,ivap,iliq,iice,nbliq,i,j,nbicelim,nbice
+  integer neqtot,itemp,ipress,ivap,iliq,iice,nbliq,i,j,nbicelim,nbice,iicemodel
   real w
   real y(neqtot),dy(neqtot)
-  real g,Rd,Mw,Ma,eps,Rm,Cp,Lv,Ls,Rv,qlsat
-  real Nmrl(nbliq),rhodrop(nbliq),pi,Nmri(nbice)
+  real g,Rd,Mw,Ma,eps,Rm,Cp,Lv,Ls,Rv,qlsat,rhoi
+  real Nmrl(nbliq),rhodrop(nbliq),pi,Nmri(nbice),rhoxtal(nbice),rhodep(nbice)
   real FLHV,FLHS,es_new
 
   g = 9.81
   pi = 3.1415926
   Rd = 287.0
   Rv = 461.5
+  rhoi = 917.0 
   Mw = 0.01801528	! Molar mass of water [kg/mole]
   Ma = 0.0289647	! Molar mass of dry air [kg/mole]
   eps = Mw/Ma
@@ -1225,7 +1253,12 @@ subroutine EnvEqns(neqtot,y,dy,w,itemp,ipress,ivap,iliq,iice, &
   dy(iice) = 0.0
   do i = 1,nbicelim
      j = i + nbliq
-     dy(iice) = dy(iice) + 4.*pi*y(j)**2 * 917. * Nmri(i)*dy(j)
+     if (iicemodel.eq.3)then
+     	dy(iice) = dy(iice) + 4.*pi*y(j)**2 * rhoi * Nmri(i)*dy(j)
+     else
+     	dy(iice) = dy(iice) + 4.*pi*y(j)**2 * rhodep(i) * Nmri(i)*dy(j)
+     endif
+
   enddo
   dy(ipress) = -((g * w)/(Rm * y(itemp))) * y(ipress)
   dy(itemp) = -(g * w)/Cp + (Lv/((1.0 + y(ivap)) * Cp) * dy(iliq)) + (Ls/((1.0 + dy(ivap)) * Cp) * dy(iice))
@@ -1365,18 +1398,19 @@ END SUBROUTINE CalcVars
 ! alpha_ain and alpha_cin to their last calculated value before calling this subroutine.
 ! These fluxes follow faceted growth theory with ledges nucleated at the crystal edge.
 !*********************************************************************
-SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi, tempk, v_v, ihabit)
+SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi, tempk, &
+						v_v, ihabit, xholin, Ab, Absol, Ap)
 
  implicit none
  
  logical icalcalpha
  integer itmax, ihabit
- real sui,Ma,Mc,scrit_a,scrit_c,ha,hc,atot,ctot,alpha_ain,alpha_cin
+ real sui,Ma,Mc,scrit_a,scrit_c,ha,hc,hcinner,atot,ctot,alpha_ain,alpha_cin
  real errabs, rel1, para, parb
- real aoin, coin, phio, pi, Rk, Rt
+ real aoin, coin, xholin, ahol, phio, pi, Rk, Rt
  real Dv, Kt, drhovidT, esi, Rv, v_v, tempk, Ls
- real capacitance, cap
- real Fa, Fc, Ab, Ap, avp, cvp, athp, cthp, fmax
+ real capacitance, cap, caphol
+ real Fa, Fc, Ab, Absol, Ap, avp, cvp, athp, cthp, fmax
  
  ! variables specific to a rosette
  real pyrang, hpyr  
@@ -1391,19 +1425,53 @@ SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi,
 	! aspect ratio
 	phio = coin/aoin
 	
+	! dimension of hollow center of basal face (will be zero for unhollowed crystals)
+	ahol = xholin * aoin
+	
 	! facet areas and capacitance
 	if(ihabit.eq.1)then
-		Ab = 2. * (Pi * (aoin**2.))
+		Ab = 2. * Pi * (aoin**2. - ahol**2.)
+		Absol = 2. * Pi * (aoin**2.)
 		Ap = 4. * Pi * aoin * coin
 		! capacitance of a cylinder
 		cap = capacitance(aoin, coin, 1, 2)
 		
+		! capacitance of a cylinder with radius equal to that of the hollowed portion
+		! of the basal face
+		if(xholin.gt.0.01)then
+			caphol = capacitance(aoin * xholin, coin, 1, 2) 
+			hcinner = Ab / (4 * pi * caphol * coin)
+		else
+			! The capacitance function doesn't like it when a = 0.
+			caphol = 0.
+			hcinner = 0.
+		endif
+		
 		! h-functions
+		hc = Ab / (4. * pi * cap * coin) - hcinner
 		hc = Ab / (4. * pi * cap * coin)
+
 		ha = Ap / (4. * pi * cap * aoin)
+
 	elseif(ihabit.ge.4)then
+	    ! Facet areas (for one arm) 
+        Ab = 2. * Pi * (aoin**2. - ahol**2.)
+        Absol = 2. * Pi * (aoin**2.)
+		Ap = 2. * Pi * aoin * (2.*coin - hpyr)
+	
 		! capacitance of a rosette
 		cap = capacitance(aoin, coin, 3, ihabit)
+		
+		! capacitance of a rosette with radius equal to that of the hollowed portion
+		! of the basal face
+		if(xholin.gt.0.01)then
+			caphol = capacitance(aoin * xholin, coin, 3, ihabit) 
+			hcinner = (Ab * REAL(ihabit)) / (4 * pi * caphol * coin)
+		else
+			! The capacitance function doesn't like it when a = 0.
+			caphol = 0.
+			hcinner = 0.
+		endif
 		
 		! Slope of pyramidal region of a rosette (use n-arms solution for 7+ arms)
 		if(ihabit.le.6)then
@@ -1413,12 +1481,9 @@ SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi,
         endif
         
         hpyr = aoin/tan(pi/2. - pyrang)
-        
-        Ab = 2. * (Pi * (aoin**2.))
-		Ap = 2. * Pi * aoin * (2.*coin - hpyr)
 		
 		! h-functions
-		hc = (Ab * REAL(ihabit)) / (4. * pi * cap * coin)
+		hc = (Absol * REAL(ihabit)) / (4. * pi * cap * coin) - hcinner
 		ha = (Ap * REAL(ihabit)) / (4. * pi * cap * aoin)
 	else
 		print*,"In calcfluxes habit", ihabit, " is not a valid habit choice."
@@ -1758,7 +1823,7 @@ function hollowfrac(sicein, scritcin)
 	endif
 	
 	! Predicted ring width is larger than a; crystal is not hollow
-	if(hollowfrac.lt.0)then
+	if(hollowfrac.lt.0.)then
 		hollowfrac = 0.
 	endif
   
