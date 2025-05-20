@@ -41,15 +41,15 @@ program parcelmodel
   real avp, athp, cvp, cthp, cap, phio, Ab, Absol, Ap, IGR, Vo, V
   real Rk, Rt, Fmax, Fa, Fc, drho, negsui, xholinit, xholavg
   ! extra rosette-related variables
-  real scrit_a_temp, scrit_c_temp, scritrat, adj_fraction, adj_factor, hpyr, pyrang, xfac, bsize
-  integer habit(nbice), ihabitchoice
+  real scrit_a_temp, scrit_c_temp, scritrat, adj_fraction, adj_factor, hpyr, pyrang, xfac
+  integer habit(nbice), ihabitchoice, msize
   
   ! other variables / constants / functions to get variables
   real Tinit,TinitK,Pinit,ztopinit,RHinit
   real pi,Rd,Rv,cp,grav,dt,To,w,rhoa,rhoi
   real press,wmax,zalt,vapmr,nosc,tau_osc
   real qlsat,RH,FLHS
-  real esi_new,es_new,funslocal,capacitance,hollowfrac
+  real esi_new,es_new,funslocal,capacitance,hollowfrac,getM
   real errabs, rel1
   
   ! thermodynamic variables
@@ -85,7 +85,7 @@ program parcelmodel
                           ! 5 = No Heterogeneous Freezing
                           
   ! ihabitchoice: habit class for ice crystals				  
-  ihabitchoice=6          ! 1 = single crystals
+  ihabitchoice=1          ! 1 = single crystals
   					      ! 2 = rosettes (random number of arms)
   						  ! 3 = combination of single crystals and rosettes (random num of arms)
   						  ! 4 - 12 = n-arm rosettes
@@ -100,8 +100,8 @@ program parcelmodel
   ihollow=2				  ! 0 = No hollowing
   						  ! 1 = User-selected constant hollowing fraction
   						  ! 2 = Parameterization for hollowing prediction (function hollowfrac)
-  ! Size at which rosettes begin to branch (set scrits to be the same for smaller crystals)
-  bsize=1.e-5
+  ! parameterize m with size (small crystal faces grow by dislocations)
+  msize=1                 ! 1 = yes, otherwise no
 
 
   ! output file
@@ -325,28 +325,24 @@ program parcelmodel
 		    ! Adjustment of scrit for rosettes in platelike regimes to avoid impossible geometry
 
 		   	if(habit(i).ge.4)then
-		   	
-		   		if(habit(i).le.6)then
-                	pyrang = 45. * (pi/180.)
-        		else 
-                	pyrang = asin(1. - pi/(2.*REAL(habit(i))))
-       		    endif
-        		hpyr = ao(i)/tan(pi/2. - pyrang)
-		   	
-		   		scrit_a_temp = scrit_a
-		   		scrit_c_temp = scrit_c
-		   	
-		   		adj_factor = 10.
-		   		scritrat = scrit_c/scrit_a
-		   		adj_fraction = (2.*co(i) - hpyr * 1.2) / hpyr
-		   		scritrat = MIN(scritrat, 1 + adj_fraction ** 3. * adj_factor) 
-		   				   	
-		   		if(ao(i).lt.bsize)then
-		   		    ! Forced constraint to avoid blowing up the model
-		   			scritrat = MIN(scritrat, 1.)
-		   		endif
-		   		
-		   		scrit_a = scrit_c / scritrat
+
+				! Constrain scrit to avoid blowing up the model
+				if(habit(i).le.6)then
+					pyrang = 45. * (pi/180.)
+				else 
+					pyrang = asin(1. - pi/(2.*REAL(habit(i))))
+				endif
+				hpyr = ao(i)/tan(pi/2. - pyrang)
+			
+				scrit_a_temp = scrit_a
+				scrit_c_temp = scrit_c
+			
+				adj_factor = 10.
+				scritrat = scrit_c/scrit_a
+				adj_fraction = (2.*co(i) - hpyr * 1.2) / hpyr
+				scritrat = MIN(scritrat, 1 + adj_fraction ** 3. * adj_factor) 
+				
+				scrit_a = scrit_c / scritrat
 
 		   	endif
 		   	
@@ -359,6 +355,12 @@ program parcelmodel
 		   	elseif(ihollow.eq.2)then
 		   		xhol(i) = hollowfrac(sui, scrit_c)
 		   	endif
+        
+        	! transition from dislocations to step nucleation with size
+        	if(msize.eq.1)then
+            	Mc = getM(10., co(i))
+            	Ma = getM(10., ao(i))
+            endif
 		   
 		   	call calcfluxes(Fa, Fc, ao(i), co(i), .true., Dv, Kt, Ls, drhovidT, ei, &
 		   	y(itemp), v_v, habit(i), xhol(i), Ab, Absol, Ap)
@@ -473,31 +475,35 @@ program parcelmodel
               !phi(i) = phio * (V/Vo) ** ((IGR - 1.)/(IGR + 2.))
               !print*,a(i),c(i),phi(i),y(j)
               
+              ! n-arm rosette (n = REAL(habit(i)))
               if(habit(i).ge.4)then
 
-		   		if(habit(i).le.6)then
-                	pyrang = 45. * (pi/180.)
-        		else 
-                	pyrang = asin(1. - pi/(2.*REAL(habit(i))))
-       		    endif
-       		    ! I did the math wrong!!
-       		    
-       		    ! xfac is a constant value corresponding to the volume loss from the pyramidal region
-        		xfac = (2./3.)/tan(pi/2. - pyrang)
-        		        		
-        		if((2 * phi(i) - xfac).le.0)then
+				if(habit(i).le.6)then
+					pyrang = 45. * (pi/180.)
+				else 
+					pyrang = asin(1. - pi/(2.*REAL(habit(i))))
+				endif
+				! I did the math wrong!!
+				
+				! xfac is a constant value corresponding to the volume loss from the pyramidal region
+				xfac = (2./3.)/tan(pi/2. - pyrang)
+								
+				if((2. * phi(i) - xfac).le.0.)then
 
-        			print*,"Error: rosette Aprism < 0! (stopping)"
-        		
-        			STOP
-        		
-        		endif
-        		
-        		a(i) = (V/(pi * REAL(habit(i)) * (2 * phi(i) - xfac)))**(1./3.)
-        		c(i) = a(i) * phi(i)
-        		
-        		hpyr = a(i) / tan(pi/2. - pyrang)
+					print*,"Warning: rosette Aprism < 0!"
+					print*,"Setting phi to 1"
+					
+					print*, a(i), c(i), phi(i), IGR
+					phi(i) = 1.
+				
+				endif
+				
+				a(i) = (V/(pi * REAL(habit(i)) * (2 * phi(i) - xfac)))**(1./3.)
+				c(i) = a(i) * phi(i)
+				
+				!hpyr = a(i) / tan(pi/2. - pyrang)
 
+			  ! single plate/column
         	  elseif(habit(i).eq.1)then
               	a(i) = (V/(2. * pi*phi(i)))**(1./3.)
               	c(i) = a(i) * phi(i)
@@ -1117,8 +1123,8 @@ SUBROUTINE iceGrowth(neqtot, nbice, nbliq, y, dy, itemp, &
            	c(i) = a(i) * phi
            	
            	! Calculate basal and prism fluxes ()
-           	call calcfluxes(Fa, Fc, a(i), c(i), .false., Dv, Kt, Ls, drhovidT, ei, &
-           	y(itemp), v_v, habit(i), Ab, Absol, Ap)
+            call calcfluxes(Fa, Fc, a(i), c(i), .false., Dv, Kt, Ls, drhovidT, ei, & 
+            y(itemp), v_v, habit(i), xhol(i), Ab, Absol, Ap)
 			
 			! Account for surface area of all of the arms
 			if(habit(i).ge.4)then
@@ -1453,7 +1459,16 @@ SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi,
 
 		ha = Ap / (4. * pi * cap * aoin)
 
-	elseif(ihabit.ge.4)then
+	elseif(ihabit.ge.4)then 
+		! Slope of pyramidal region of a rosette (use n-arms solution for 7+ arms)
+		if(ihabit.le.6)then
+                pyrang = 45. * (pi/180.)
+        else 
+                pyrang = asin(1. - pi/(2.*REAL(ihabit)))
+        endif
+	  
+        hpyr = aoin/tan(pi/2. - pyrang)
+	
 	    ! Facet areas (for one arm) 
         Ab = 2. * Pi * (aoin**2. - ahol**2.)
         Absol = 2. * Pi * (aoin**2.)
@@ -1472,15 +1487,6 @@ SUBROUTINE calcfluxes(Fa, Fc, aoin, coin, icalcalpha, Dv, Kt, Ls, drhovidT, esi,
 			caphol = 0.
 			hcinner = 0.
 		endif
-		
-		! Slope of pyramidal region of a rosette (use n-arms solution for 7+ arms)
-		if(ihabit.le.6)then
-                pyrang = 45. * (pi/180.)
-        else 
-                pyrang = asin(1. - pi/(2.*REAL(ihabit)))
-        endif
-        
-        hpyr = aoin/tan(pi/2. - pyrang)
 		
 		! h-functions
 		hc = (Absol * REAL(ihabit)) / (4. * pi * cap * coin) - hcinner
@@ -1767,7 +1773,12 @@ real function es_new(tmp)
   RETURN
 END function es_new
 
+function getM(Mmax, dim)
+	real getM, Mmax, scrit, sui, dim
 
+    getM = max(Mmax / (1. + exp(-(dim * 1.e6 - 10.) / 3.)), 1.)
+    return
+end function getM
 
 !**********************************************************************
 !     Function for finding the surface supersaturations and
